@@ -72,18 +72,19 @@ jobs:
               --repo-deploy-releases=${{ env.MVN_VIRTUAL_REPO_RELEASE }} \
               --repo-resolve-snapshots=${{ env.MVN_VIRTUAL_REPO_SNAPSHOT }} \
               --repo-deploy-snapshots=${{ env.MVN_VIRTUAL_REPO_SNAPSHOT }}
-            
-            # Run curation audit and capture output
-            audit_output=$(jf ca 2>&1)
-            echo "$audit_output"
-          
+
+            # Run curation audit and print output to log
+            jf ca 2>&1 | tee audit_output.log
+            cat audit_output.log
+            audit_output=$(cat audit_output.log)
+
             # Check if blocked packages were found
             if echo "$audit_output" | grep -q "Found [1-9][0-9]* blocked packages"; then
               echo "::error::Curation audit detected blocked packages - failing build"
               echo "curation_failed=true" >> $GITHUB_OUTPUT
               exit 1
             fi
-            
+
             jf rt bag ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} # collect vcs info
             jf mvn -f pom.xml -Drevision=1.${{ env.BUILD_NUMBER }}.0 -Dmaven.test.skip=true clean package # build the war
             jf audit --mvn --fail=false --vuln # scan the war
