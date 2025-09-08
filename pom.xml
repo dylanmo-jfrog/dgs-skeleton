@@ -10,12 +10,13 @@
 	<groupId>fr.dylanmo</groupId>
 	<artifactId>dgs-skeleton-webapp</artifactId>
 	<packaging>war</packaging>
-	<version>1</version>
+	<version>${revision}</version>
 	<name>DGS GraphQL Skeleton</name>
 	<description>Skeleton project for Netflix DGS</description>
 	<properties>
 		<java.version>11</java.version>
 		<maven.deploy.skip>true</maven.deploy.skip>
+		<revision>1</revision>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
