@@ -87,6 +87,7 @@ jobs:
             jf mvn -f pom.xml -Drevision=${{ env.PKG_VERSION }} -Dmaven.test.skip=true clean package # build the war
             jf audit --mvn --fail=false --vuln # scan the war
             jf mvn -f pom.xml -Drevision=${{ env.PKG_VERSION }} -Dmaven.test.skip=true --build-name=${{ env.BUILD_NAME }} --build-number=${{ env.BUILD_NUMBER }} deploy # deploy the war
+            jf bs --fail=false --vuln ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
             
             # Debug: List files in target directory
             echo "Listing files in target directory:"
