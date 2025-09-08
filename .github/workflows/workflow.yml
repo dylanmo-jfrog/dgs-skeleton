@@ -13,6 +13,14 @@ jobs:
     runs-on: ubuntu-latest
 
     # Setup environment variables, some of them can be overridden by repository variables
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      security-events: write
+      actions: read 
+      attestations: write    
+      packages: write    
     env:
       JF_HOST: ${{ vars.JF_HOST                 || 'soleng.jfrog.io' }}
       JF_PROJECT_KEY: ${{ vars.JF_PROJECT_KEY   || 'dmodgs' }}
@@ -22,16 +30,6 @@ jobs:
       IMAGE_NAME: 'graphql-dgs-tcat'
       MVN_VIRTUAL_REPO_SNAPSHOT: 'dylanmo-dev-libs-snapshot'
       MVN_VIRTUAL_REPO_RELEASE: 'dylanmo-dev-libs-release'
-    
-     # Set the required permissions for the job 
-      permissions:
-      id-token: write
-      contents: write
-      pull-requests: write
-      security-events: write
-      actions: read 
-      attestations: write    
-      packages: write    
 
     # Here we install all the tools : docker buildx, QEMU, JDK 11, JFrog CLI
     steps:
