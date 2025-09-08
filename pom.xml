@@ -7,6 +7,16 @@
 		<version>2.4.5</version>
 		<relativePath /> <!-- lookup parent from repository -->
 	</parent>
+	<groupId>fr.dylanmo</groupId>
+	<artifactId>dgs-skeleton-webapp</artifactId>
+	<packaging>war</packaging>
+	<version>1</version>
+	<name>DGS GraphQL Skeleton</name>
+	<description>Skeleton project for Netflix DGS</description>
+	<properties>
+		<java.version>11</java.version>
+		<maven.deploy.skip>true</maven.deploy.skip>
+	</properties>
 	<dependencyManagement>
 		<dependencies>
 			<dependency>
