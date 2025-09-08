@@ -49,6 +49,9 @@ jobs:
         env:
           JF_URL: https://${{ env.JF_HOST }}/
           JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
+          # Override any automatic build number with our desired one
+          JFROG_CLI_BUILD_NAME: ${{ env.BUILD_NAME }}
+          JFROG_CLI_BUILD_NUMBER: ${{ env.BUILD_NUMBER }}
         with:
             oidc-provider-name: dylanmo-github
             oidc-audience: dylanmo-github
