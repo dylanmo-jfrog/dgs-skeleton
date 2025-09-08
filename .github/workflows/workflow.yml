@@ -1,21 +1,38 @@
 name: "github-dgs-build"
 on: 
-  schedule:
-    - cron: "0 0 * * *"  
-  workflow_dispatch:
+  workflow_dispatch: # manual trigger
+  push:
+    branches:
+      - main
+    paths:
+      - '**.java'
+      - 'pom.xml'
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # Setup environment variables, some of them can be overridden by repository variables
     env:
-      DOCKER_REPO: 'dro-oci-dev-local'
+      JF_HOST: ${{ vars.JF_HOST                 || 'soleng.jfrog.io' }}
+      JF_PROJECT_KEY: ${{ vars.JF_PROJECT_KEY   || 'dmodgs' }}
+      BUILD_NAME: ${{ vars.BUILD_NAME           || 'dylanmo-dgs-docker-build' }}
+      BUILD_NUMBER: ${{ vars.BUILD_NUMBER       || github.run_id }}
+      DOCKER_REPO: 'dylanmo-dev-docker-local'
       IMAGE_NAME: 'graphql-dgs-tcat'
-      MVN_VIRTUAL_REPO: 'dro-backend-maven-virtual'
-    permissions:
+      MVN_VIRTUAL_REPO_SNAPSHOT: 'dylanmo-dev-libs-snapshot'
+      MVN_VIRTUAL_REPO_RELEASE: 'dylanmo-dev-libs-release'
+    
+     # Set the required permissions for the job 
+      permissions:
       id-token: write
-      contents: read
+      contents: write
+      pull-requests: write
+      security-events: write
       actions: read 
       attestations: write    
       packages: write    
+
     # Here we install all the tools : docker buildx, QEMU, JDK 11, JFrog CLI
     steps:
       - name: Checkout
@@ -26,48 +43,69 @@ jobs:
           java-version: '11'
           distribution: 'corretto'        
           cache: 'maven'
+    
+    # Install JFrog CLI using the JFrog CLI GitHub Action      
       - name: Setup JFrog CLI
         id: setup-cli
         uses: jfrog/setup-jfrog-cli@v4
         env:
-          JF_URL: https://${{ vars.JF_HOST }}/
-          JF_PROJECT: ${{ vars.JF_PROJECT_KEY }}
+          JF_URL: https://${{ env.JF_HOST }}/
+          JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
         with:
-            oidc-provider-name: davidro-github-integration
-            oidc-audience: davidro-github
+            oidc-provider-name: dylanmo-github
+            oidc-audience: dylanmo-github
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        # We build & test the WAR file, scan it and if scan result ok, we publish it to our artifactory maven repository
-      - name: Run Maven build 
+     
+      # We build & test the WAR file, scan it and if scan result ok, we publish it to our artifactory maven repository
+      - name: Run Maven build
+        id: build 
         env:
-          PKG_VERSION: 1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0
-          JF_PROJECT: ${{ vars.JF_PROJECT_KEY }}
+          PKG_VERSION: ${{ github.run_number }}
+          JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
         run: |
             # Collect environment variables for the build
-            jf rt bce ${{ env.JFROG_CLI_BUILD_NAME }} ${{ env.JFROG_CLI_BUILD_NUMBER }} 
-            jf mvnc --repo-resolve-releases=${{ env.MVN_VIRTUAL_REPO }} \
-              --repo-deploy-releases=${{ env.MVN_VIRTUAL_REPO }} \
-              --repo-resolve-snapshots=${{ env.MVN_VIRTUAL_REPO }} \
-              --repo-deploy-snapshots=${{ env.MVN_VIRTUAL_REPO }}
-            jf curation-audit
-            jf rt bag ${{ env.JFROG_CLI_BUILD_NAME }} ${{ env.JFROG_CLI_BUILD_NUMBER }}
-            jf mvn -f pom.xml -Drevision=1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0 -Dmaven.test.skip=true clean package
-            jf audit --mvn
-            jf mvn -f pom.xml -Drevision=1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0 -Dmaven.test.skip=true --build-name=${{ env.JFROG_CLI_BUILD_NAME }} --build-number=${{ env.JFROG_CLI_BUILD_NUMBER }} deploy
-            jf scan --vuln ./target/dgs-skeleton-webapp-1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0.war
+            jf rt bce ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} 
+            jf mvnc --repo-resolve-releases=${{ env.MVN_VIRTUAL_REPO_RELEASE }} \
+              --repo-deploy-releases=${{ env.MVN_VIRTUAL_REPO_RELEASE }} \
+              --repo-resolve-snapshots=${{ env.MVN_VIRTUAL_REPO_SNAPSHOT }} \
+              --repo-deploy-snapshots=${{ env.MVN_VIRTUAL_REPO_SNAPSHOT }}
+            
+            # Run curation audit and capture output
+            audit_output=$(jf ca 2>&1)
+            echo "$audit_output"
+          
+            # Check if blocked packages were found
+            if echo "$audit_output" | grep -q "Found [1-9][0-9]* blocked packages"; then
+              echo "::error::Curation audit detected blocked packages - failing build"
+              echo "curation_failed=true" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            jf rt bag ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} # collect vcs info
+            jf mvn -f pom.xml -Drevision=1.${{ env.BUILD_NUMBER }}.0 -Dmaven.test.skip=true clean package # build the war
+            jf audit --mvn --fail=false --vuln # scan the war
+            jf mvn -f pom.xml -Drevision=1.${{ env.BUILD_NUMBER }}.0 -Dmaven.test.skip=true --build-name=${{ env.BUILD_NAME }} --build-number=${{ env.BUILD_NUMBER }} deploy # deploy the war
+            jf bs ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} --fail=false --vuln # scan the deploy build
+
+     # If the curation audit failed, we skip the docker build and push steps       
       - name: Authenticate Docker
+        if: steps.build.outputs.curation_failed != 'true'
         uses: docker/login-action@v3
         with:
-          registry: ${{ vars.JF_HOST }}
+          registry: ${{ env.JF_HOST }}
           username: ${{ steps.setup-cli.outputs.oidc-user }}
-          password: ${{ steps.setup-cli.outputs.oidc-token }}      
+          password: ${{ steps.setup-cli.outputs.oidc-token }}
+                
       - name: Build and push docker tomcat + war based docker images
+        if: steps.build.outputs.curation_failed != 'true'
         env: 
-          PKG_VERSION: 1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0
-          JF_PROJECT: ${{ vars.JF_PROJECT_KEY }}
+          PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
+          JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
         uses: docker/build-push-action@v6
         id: docker_build
         with:
@@ -77,30 +115,30 @@ jobs:
           push: true
           build-args: |
             WAR_FILE_NAME=dgs-skeleton-webapp-${{ env.PKG_VERSION }}.war
-          tags: ${{ vars.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
+          tags: ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
+      
       - name: Push Docker build info
         env:
-          PKG_VERSION: 1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0
-          JF_PROJECT: ${{ vars.JF_PROJECT_KEY }}
+          PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
+          JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
         run: |
-          echo ${{ vars.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}@${{ steps.docker_build.outputs.digest }} > ./image-metadata.json
+          echo ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}@${{ steps.docker_build.outputs.digest }} > ./image-metadata.json
           # Collect environment variables for the build
-          jf rt bce ${{ env.JFROG_CLI_BUILD_NAME }} ${{ env.JFROG_CLI_BUILD_NUMBER }} 
+          jf rt bce ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} 
           # collect vcs info
-          jf rt bag ${{ env.JFROG_CLI_BUILD_NAME }} ${{ env.JFROG_CLI_BUILD_NUMBER }}
+          jf rt bag ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
           # As the docker images have been built by buildx, we don't have them locally, 
           # so we link the build info to the already published images in previous steps
-          jf rt bdc ${{ env.DOCKER_REPO }} --image-file ./image-metadata.json --build-name ${{ env.JFROG_CLI_BUILD_NAME }} --build-number ${{ env.JFROG_CLI_BUILD_NUMBER }}
+          jf rt bdc ${{ env.DOCKER_REPO }} --image-file ./image-metadata.json --build-name ${{ env.BUILD_NAME }} --build-number ${{ env.BUILD_NUMBER }}
           # Publish build info
-          jf rt bp ${{ env.JFROG_CLI_BUILD_NAME }} ${{ env.JFROG_CLI_BUILD_NUMBER }}
+          jf rt bp ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
+
       - name: Scan the build & the docker image
         env:
-          PKG_VERSION: 1.${{ env.JFROG_CLI_BUILD_NUMBER }}.0
-          JF_PROJECT: ${{ vars.JF_PROJECT_KEY }}
+          PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
+          JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
         run: |
           # Xray build scan example
-          docker pull ${{ vars.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
-          jf docker scan ${{ vars.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }} --severity='HIGH,CRITICAL' --vuln
-          jf bs --fail=false --vuln ${{ env.JFROG_CLI_BUILD_NAME }} ${{ env.JFROG_CLI_BUILD_NUMBER }}
-
-
+          docker pull ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
+          jf docker scan ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }} --severity='HIGH,CRITICAL' --vuln
+          jf bs --fail=false --vuln ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
