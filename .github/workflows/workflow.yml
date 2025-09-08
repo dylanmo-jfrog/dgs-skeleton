@@ -74,9 +74,7 @@ jobs:
               --repo-deploy-snapshots=${{ env.MVN_VIRTUAL_REPO_SNAPSHOT }}
 
             # Run curation audit and print output to log
-            jf ca 2>&1 | tee audit_output.log
-            cat audit_output.log
-            audit_output=$(cat audit_output.log)
+            audit_output=$(jf ca 2>&1)
 
             # Check if blocked packages were found
             if echo "$audit_output" | grep -q "Found [1-9][0-9]* blocked packages"; then
