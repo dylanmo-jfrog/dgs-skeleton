@@ -1,0 +1,73 @@
+name: Teardown AWS Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: 'Type "destroy" to confirm you want to destroy all resources'
+        required: true
+        type: string
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: us-east-1
+      EKS_CLUSTER_NAME: dgs-skeleton-cluster
+
+    steps:
+    - name: Verify confirmation
+      if: github.event.inputs.confirm_destroy != 'destroy'
+      run: |
+        echo "You must type 'destroy' to confirm resource deletion"
+        exit 1
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kube config
+      run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ env.AWS_REGION }}
+
+    - name: Remove Kubernetes Resources
+      run: |
+        echo "Removing all resources from Kubernetes cluster..."
+        kubectl delete service dgs-skeleton-service || true
+        kubectl delete deployment dgs-skeleton || true
+        kubectl delete secret artifactory-pull-secret || true
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Destroy
+      working-directory: ./terraform
+      run: terraform destroy -auto-approve
+
+    - name: Cleanup Local Kubeconfig
+      if: always()
+      run: |
+        rm -f ~/.kube/config || true
+
+    - name: Cleanup Backend Infrastructure
+      if: github.event.inputs.confirm_destroy == 'destroy'
+      working-directory: ./terraform/bootstrap
+      run: |
+        # First, we need to remove the prevent_destroy lifecycle rule
+        sed -i 's/prevent_destroy = true/prevent_destroy = false/' main.tf
+        terraform init
+        terraform destroy -auto-approve

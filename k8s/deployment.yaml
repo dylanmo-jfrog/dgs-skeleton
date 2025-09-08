@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dgs-skeleton
+  labels:
+    app: dgs-skeleton
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dgs-skeleton
+  template:
+    metadata:
+      labels:
+        app: dgs-skeleton
+    spec:
+      imagePullSecrets:
+        - name: artifactory-pull-secret
+      containers:
+      - name: dgs-skeleton
+        image: CONTAINER_IMAGE
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /graphql
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /graphql
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dgs-skeleton-service
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: dgs-skeleton

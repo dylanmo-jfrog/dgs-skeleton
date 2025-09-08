@@ -1,6 +1,15 @@
-name: "dylanmo-dgs-docker-build"
+name: "Build and Publish DGS"
 on: 
   workflow_dispatch: # manual trigger
+    inputs:
+      deploy_to_eks:
+        description: 'Deploy to EKS?'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+        required: true
+        default: 'no'
   push:
     branches:
       - main
@@ -151,3 +160,84 @@ jobs:
           docker pull ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
           jf docker scan ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }} --severity='HIGH,CRITICAL' --vuln
           jf bs --fail=false --vuln ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
+
+  deploy-to-eks:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_to_eks == 'yes'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+
+    env:
+      AWS_REGION: us-east-1
+      EKS_CLUSTER_NAME: dgs-skeleton-cluster
+      JF_HOST: ${{ vars.JF_HOST || 'soleng.jfrog.io' }}
+      JF_PROJECT_KEY: ${{ vars.JF_PROJECT_KEY || 'dmodgs' }}
+      BUILD_NUMBER: ${{ vars.BUILD_NUMBER || github.run_id }}
+      DOCKER_REPO: 'dylanmo-dev-docker-local'
+      IMAGE_NAME: 'graphql-dgs-tcat'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup JFrog CLI
+      id: setup-cli
+      uses: jfrog/setup-jfrog-cli@v4
+      env:
+        JF_URL: https://${{ env.JF_HOST }}/
+        JF_PROJECT: ${{ env.JF_PROJECT_KEY }}
+      with:
+        oidc-provider-name: dylanmo-github
+        oidc-audience: dylanmo-github
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+
+    - name: Setup Backend Infrastructure
+      working-directory: ./terraform/bootstrap
+      run: |
+        terraform init
+        terraform apply -auto-approve
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Apply
+      working-directory: ./terraform
+      run: terraform apply -auto-approve
+
+    - name: Update kube config
+      run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ env.AWS_REGION }}
+
+    - name: Deploy to EKS
+      env:
+        PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
+      run: |
+        # Replace the image reference in the deployment file with the Artifactory image
+        FULL_IMAGE_NAME="${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.PKG_VERSION }}"
+        sed -i "s|image: CONTAINER_IMAGE|image: ${FULL_IMAGE_NAME}|" k8s/deployment.yaml
+        
+        # Create image pull secret for Artifactory using OIDC token
+        kubectl create secret docker-registry artifactory-pull-secret \
+          --docker-server=${{ env.JF_HOST }} \
+          --docker-username=${{ steps.setup-cli.outputs.oidc-user }} \
+          --docker-password=${{ steps.setup-cli.outputs.oidc-token }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Apply the deployment
+        kubectl apply -f k8s/deployment.yaml
+        
+        # Wait for deployment to be ready
+        kubectl rollout status deployment/dgs-skeleton --timeout=300s
