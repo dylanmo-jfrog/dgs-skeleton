@@ -1,4 +1,4 @@
-name: "github-dgs-build"
+name: "dylanmo-dgs-docker-build"
 on: 
   workflow_dispatch: # manual trigger
   push:
