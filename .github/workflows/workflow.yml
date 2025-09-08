@@ -87,7 +87,7 @@ jobs:
             jf mvn -f pom.xml -Drevision=1.${{ env.BUILD_NUMBER }}.0 -Dmaven.test.skip=true clean package # build the war
             jf audit --mvn --fail=false --vuln # scan the war
             jf mvn -f pom.xml -Drevision=1.${{ env.BUILD_NUMBER }}.0 -Dmaven.test.skip=true --build-name=${{ env.BUILD_NAME }} --build-number=${{ env.BUILD_NUMBER }} deploy # deploy the war
-            jf bs ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} --fail=false --vuln # scan the deploy build
+            jf scan ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} --fail=false --vuln # scan the deploy build
 
      # If the curation audit failed, we skip the docker build and push steps       
       - name: Authenticate Docker
