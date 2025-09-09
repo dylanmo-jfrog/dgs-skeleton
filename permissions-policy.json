@@ -30,20 +30,6 @@
                 "arn:aws:s3:::dgs-skeleton-terraform-state",
                 "arn:aws:s3:::dgs-skeleton-terraform-state/*"
             ]
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "dynamodb:GetItem",
-                "dynamodb:PutItem",
-                "dynamodb:DeleteItem",
-                "dynamodb:CreateTable",
-                "dynamodb:DescribeTable",
-                "dynamodb:DeleteTable",
-                "dynamodb:DescribeContinuousBackups",
-                "dynamodb:UpdateContinuousBackups"
-            ],
-            "Resource": "arn:aws:dynamodb:us-east-1:319319364622:table/dgs-skeleton-terraform-lock"
         }
     ]
 }
