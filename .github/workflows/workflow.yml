@@ -208,6 +208,12 @@ jobs:
       working-directory: ./terraform/bootstrap
       run: |
         terraform init
+        
+        # Try to import existing resources
+        terraform import aws_s3_bucket.terraform_state dgs-skeleton-terraform-state || true
+        terraform import aws_dynamodb_table.terraform_locks dgs-skeleton-terraform-lock || true
+        
+        # Apply changes (this will update any configuration if needed)
         terraform apply -auto-approve
 
     - name: Terraform Init

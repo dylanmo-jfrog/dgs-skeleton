@@ -5,9 +5,9 @@ provider "aws" {
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "dgs-skeleton-terraform-state"
 
-  # Prevent accidental deletion of this S3 bucket
+  # Allow Terraform to manage this bucket
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
   }
 }
 
