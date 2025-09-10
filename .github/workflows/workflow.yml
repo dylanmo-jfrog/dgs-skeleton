@@ -39,6 +39,10 @@ jobs:
       IMAGE_NAME: 'graphql-dgs-tcat'
       MVN_VIRTUAL_REPO_SNAPSHOT: 'dylanmo-dev-libs-snapshot'
       MVN_VIRTUAL_REPO_RELEASE: 'dylanmo-dev-libs-release'
+    
+    outputs:
+      build-number: ${{ env.BUILD_NUMBER }}
+      pkg-version: 1.${{ env.BUILD_NUMBER }}.0
 
     # Here we install all the tools : docker buildx, QEMU, JDK 11, JFrog CLI
     steps:
@@ -175,7 +179,8 @@ jobs:
       EKS_CLUSTER_NAME: dgs-skeleton-cluster
       JF_HOST: ${{ vars.JF_HOST || 'soleng.jfrog.io' }}
       JF_PROJECT_KEY: ${{ vars.JF_PROJECT_KEY || 'dmodgs' }}
-      BUILD_NUMBER: ${{ vars.BUILD_NUMBER || github.run_id }}
+      BUILD_NUMBER: ${{ needs.build.outputs.build-number }}
+      PKG_VERSION: ${{ needs.build.outputs.pkg-version }}
       DOCKER_REPO: 'dylanmo-dev-docker-local'
       IMAGE_NAME: 'graphql-dgs-tcat'
 
@@ -227,8 +232,6 @@ jobs:
       run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ env.AWS_REGION }}
 
     - name: Deploy to EKS
-      env:
-        PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
       run: |
         # Wait a moment for EKS cluster to be fully ready after Terraform apply
         echo "Waiting for cluster to be fully ready..."
@@ -239,20 +242,96 @@ jobs:
         
         # Replace the image reference in the deployment file with the Artifactory image
         FULL_IMAGE_NAME="${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.PKG_VERSION }}"
+        echo "=== Using image: $FULL_IMAGE_NAME ==="
+        
+        # Verify the image exists in Artifactory before deploying
+        echo "=== Verifying image exists in Artifactory ==="
+        echo "OIDC User: ${{ steps.setup-cli.outputs.oidc-user }}"
+        echo "Image tag: ${{ env.PKG_VERSION }}"
+        
+        # Check if image exists using JFrog CLI
+        if jf rt search "${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}/${{ env.PKG_VERSION }}/"; then
+          echo "✅ Image found in Artifactory"
+        else
+          echo "❌ Image not found in Artifactory. Available images:"
+          jf rt search "${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}/" || echo "No images found for ${{ env.IMAGE_NAME }}"
+          exit 1
+        fi
+        
         sed -i "s|image: CONTAINER_IMAGE|image: ${FULL_IMAGE_NAME}|" k8s/deployment.yaml
         
+        # Show the final deployment file
+        echo "=== Final deployment.yaml ==="
+        cat k8s/deployment.yaml
+        
         # Create image pull secret for Artifactory using OIDC token
+        echo "=== Creating image pull secret ==="
+        echo "Docker server: ${{ env.JF_HOST }}"
+        echo "Docker username: ${{ steps.setup-cli.outputs.oidc-user }}"
+        echo "Token length: ${#${{ steps.setup-cli.outputs.oidc-token }}}"
+        
         kubectl create secret docker-registry artifactory-pull-secret \
           --docker-server=${{ env.JF_HOST }} \
           --docker-username=${{ steps.setup-cli.outputs.oidc-user }} \
           --docker-password=${{ steps.setup-cli.outputs.oidc-token }} \
           --dry-run=client -o yaml | kubectl apply -f -
+          
+        # Verify the secret was created and test authentication
+        kubectl get secret artifactory-pull-secret
+        
+        # Test if we can pull the image manually (this will help debug auth issues)
+        echo "=== Testing image pull authentication ==="
+        if docker login ${{ env.JF_HOST }} -u ${{ steps.setup-cli.outputs.oidc-user }} -p ${{ steps.setup-cli.outputs.oidc-token }}; then
+          echo "✅ Docker login successful"
+          # Try to pull the image to verify it works
+          if docker pull $FULL_IMAGE_NAME; then
+            echo "✅ Image pull successful"
+          else
+            echo "❌ Image pull failed"
+            exit 1
+          fi
+        else
+          echo "❌ Docker login failed"
+          exit 1
+        fi
         
         # Apply the deployment with validation disabled if needed
         kubectl apply -f k8s/deployment.yaml --validate=false
         
-        # Wait for deployment to be ready
-        kubectl rollout status deployment/dgs-skeleton --timeout=300s
+        # Show what was created
+        echo "=== Checking deployment status ==="
+        kubectl get pods -l app=dgs-skeleton
+        kubectl get deployment dgs-skeleton
+        kubectl get service dgs-skeleton-service
+        
+        # Wait for deployment to be ready with shorter timeout and better debugging
+        echo "=== Waiting for deployment (max 3 minutes) ==="
+        if ! kubectl rollout status deployment/dgs-skeleton --timeout=180s; then
+          echo "❌ Deployment failed or timed out. Debugging..."
+          
+          echo "=== Pod Status ==="
+          kubectl get pods -l app=dgs-skeleton -o wide
+          
+          echo "=== Pod Events ==="
+          kubectl get events --sort-by=.metadata.creationTimestamp | grep dgs-skeleton
+          
+          echo "=== Pod Descriptions ==="
+          kubectl describe pods -l app=dgs-skeleton
+          
+          echo "=== Pod Logs ==="
+          for pod in $(kubectl get pods -l app=dgs-skeleton -o jsonpath='{.items[*].metadata.name}'); do
+            echo "--- Logs for $pod ---"
+            kubectl logs $pod --tail=50 || echo "No logs available for $pod"
+          done
+          
+          echo "=== Deployment Description ==="
+          kubectl describe deployment dgs-skeleton
+          
+          echo "=== Image Pull Secret ==="
+          kubectl get secret artifactory-pull-secret -o yaml
+          
+          exit 1
+        fi
         
         # Show access information
         echo "=== Deployment Complete ==="
