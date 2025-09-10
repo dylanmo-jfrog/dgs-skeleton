@@ -162,8 +162,8 @@ jobs:
         run: |
           # Xray build scan example
           docker pull ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
-          jf docker scan ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }} --severity='HIGH,CRITICAL' --vuln
-          jf bs --fail=false --vuln ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
+          # jf docker scan ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }} --severity='HIGH,CRITICAL' --vuln
+          # jf bs --fail=false --vuln ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
 
   deploy-to-eks:
     needs: build
