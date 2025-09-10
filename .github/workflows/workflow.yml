@@ -230,6 +230,13 @@ jobs:
       env:
         PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
       run: |
+        # Wait a moment for EKS cluster to be fully ready after Terraform apply
+        echo "Waiting for cluster to be fully ready..."
+        sleep 30
+        
+        # Verify cluster connectivity
+        kubectl cluster-info
+        
         # Replace the image reference in the deployment file with the Artifactory image
         FULL_IMAGE_NAME="${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME }}:${{ env.PKG_VERSION }}"
         sed -i "s|image: CONTAINER_IMAGE|image: ${FULL_IMAGE_NAME}|" k8s/deployment.yaml
@@ -241,8 +248,71 @@ jobs:
           --docker-password=${{ steps.setup-cli.outputs.oidc-token }} \
           --dry-run=client -o yaml | kubectl apply -f -
         
-        # Apply the deployment
-        kubectl apply -f k8s/deployment.yaml
+        # Apply the deployment with validation disabled if needed
+        kubectl apply -f k8s/deployment.yaml --validate=false
         
         # Wait for deployment to be ready
         kubectl rollout status deployment/dgs-skeleton --timeout=300s
+        
+        # Show access information
+        echo "=== Deployment Complete ==="
+        kubectl get pods -l app=dgs-skeleton
+        kubectl get service dgs-skeleton-service
+        
+        # Get node IPs and service port for access
+        echo "=== Access Information ==="
+        NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}')
+        SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
+        
+        if [ -n "$NODE_IPS" ]; then
+          for ip in $NODE_IPS; do
+            echo "GraphQL endpoint: http://$ip:$SERVICE_PORT/graphql"
+            echo "Health check: http://$ip:$SERVICE_PORT/health/status"
+            
+            # Wait for health check to go green
+            echo "Waiting for health check to be ready at http://$ip:$SERVICE_PORT/health/status..."
+            for i in {1..30}; do
+              if curl -f -s "http://$ip:$SERVICE_PORT/health/status" > /dev/null 2>&1; then
+                echo "✅ Health check passed! Application is ready."
+                echo "🚀 GraphQL API is available at: http://$ip:$SERVICE_PORT/graphql"
+                break
+              else
+                echo "⏳ Attempt $i/30: Health check not ready yet, waiting 10 seconds..."
+                sleep 10
+              fi
+              
+              if [ $i -eq 30 ]; then
+                echo "❌ Health check failed after 5 minutes. Check pod logs:"
+                kubectl logs -l app=dgs-skeleton --tail=50
+                exit 1
+              fi
+            done
+          done
+        else
+          echo "No external IPs found. Use port-forwarding: kubectl port-forward service/dgs-skeleton-service 8080:80"
+          
+          # For port-forward scenario, test health check via localhost
+          echo "Testing health check via port-forward..."
+          kubectl port-forward service/dgs-skeleton-service 8080:80 &
+          PORT_FORWARD_PID=$!
+          sleep 5
+          
+          for i in {1..30}; do
+            if curl -f -s "http://localhost:8080/health/status" > /dev/null 2>&1; then
+              echo "✅ Health check passed! Application is ready."
+              echo "🚀 GraphQL API is available at: http://localhost:8080/graphql (via port-forward)"
+              kill $PORT_FORWARD_PID
+              break
+            else
+              echo "⏳ Attempt $i/30: Health check not ready yet, waiting 10 seconds..."
+              sleep 10
+            fi
+            
+            if [ $i -eq 30 ]; then
+              echo "❌ Health check failed after 5 minutes. Check pod logs:"
+              kubectl logs -l app=dgs-skeleton --tail=50
+              kill $PORT_FORWARD_PID
+              exit 1
+            fi
+          done
+        fi

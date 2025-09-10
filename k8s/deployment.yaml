@@ -30,13 +30,13 @@ spec:
             cpu: "500m"
         readinessProbe:
           httpGet:
-            path: /graphql
+            path: /health/status
             port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
         livenessProbe:
           httpGet:
-            path: /graphql
+            path: /health/status
             port: 8080
           initialDelaySeconds: 60
           periodSeconds: 20
@@ -46,10 +46,11 @@ kind: Service
 metadata:
   name: dgs-skeleton-service
 spec:
-  type: LoadBalancer
+  type: NodePort  # External access via node IP + port
   ports:
   - port: 80
     targetPort: 8080
+    nodePort: 30080  # Optional: specify port (30000-32767)
     protocol: TCP
   selector:
     app: dgs-skeleton

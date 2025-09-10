@@ -43,6 +43,13 @@ module "eks" {
 
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
+  
+  # Enable public endpoint access
+  cluster_endpoint_public_access = true
+  cluster_endpoint_private_access = true
+  
+  # Optional: Restrict public access to specific CIDR blocks
+  cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]  # You might want to restrict this to specific IPs
 
   eks_managed_node_groups = {
     default = {
@@ -51,6 +58,13 @@ module "eks" {
       desired_size = 2
 
       instance_types = ["t3.medium"]
+      
+      # Add additional IAM policies for the node group
+      iam_role_additional_policies = {
+        AmazonEKS_CNI_Policy = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+        AmazonEKSWorkerNodePolicy = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        AmazonEKSServicePolicy = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+      }
     }
   }
 
