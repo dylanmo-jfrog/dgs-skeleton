@@ -3,8 +3,16 @@ name: Teardown AWS Resources
 on:
   workflow_dispatch:
     inputs:
+      destroy_level:
+        description: 'Destruction level'
+        required: true
+        type: choice
+        options:
+          - 'infrastructure-only'
+          - 'complete-destroy'
+        default: 'infrastructure-only'
       confirm_destroy:
-        description: 'Type "destroy" to confirm you want to destroy all resources'
+        description: 'Type "destroy" to confirm you want to destroy resources'
         required: true
         type: string
 
@@ -36,14 +44,26 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Update kube config
-      run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ env.AWS_REGION }}
+      continue-on-error: true
+      run: |
+        echo "Attempting to update kubeconfig (may fail if cluster doesn't exist)..."
+        aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region ${{ env.AWS_REGION }} || echo "Cluster may not exist, continuing..."
 
     - name: Remove Kubernetes Resources
+      continue-on-error: true
       run: |
         echo "Removing all resources from Kubernetes cluster..."
         kubectl delete service dgs-skeleton-service || true
         kubectl delete deployment dgs-skeleton || true
         kubectl delete secret artifactory-pull-secret || true
+        
+        # Clean up any potential LoadBalancer services that might exist
+        echo "Checking for any LoadBalancer services..."
+        kubectl get services -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].metadata.name}' | xargs -r kubectl delete service || true
+        
+        # Wait a moment for AWS LoadBalancers to start cleanup
+        echo "Waiting 30 seconds for any LoadBalancer cleanup to begin..."
+        sleep 30
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
@@ -64,10 +84,46 @@ jobs:
         rm -f ~/.kube/config || true
 
     - name: Cleanup Backend Infrastructure
-      if: github.event.inputs.confirm_destroy == 'destroy'
+      if: github.event.inputs.destroy_level == 'complete-destroy'
       working-directory: ./terraform/bootstrap
       run: |
-        # First, we need to remove the prevent_destroy lifecycle rule
-        sed -i 's/prevent_destroy = true/prevent_destroy = false/' main.tf
+        echo "🚨 COMPLETE DESTROY: Removing S3 state bucket..."
+        echo "⚠️  After this, you'll need to re-run bootstrap to deploy again!"
         terraform init
         terraform destroy -auto-approve
+
+    - name: Preserve State Message
+      if: github.event.inputs.destroy_level == 'infrastructure-only'
+      run: |
+        echo "✅ Infrastructure destroyed but S3 state bucket preserved"
+        echo "💡 You can re-deploy anytime with workflow.yml"
+        echo "🗄️  State bucket 'dgs-skeleton-terraform-state' remains for future deployments"
+
+    - name: Verify All Resources Destroyed
+      run: |
+        echo "=== Verifying resource cleanup ==="
+        
+        # Check for any remaining EKS clusters
+        echo "Checking for EKS clusters..."
+        aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[?contains(@, `dgs-skeleton`)]' || true
+        
+        # Check for any remaining VPCs with our tags
+        echo "Checking for VPCs..."
+        aws ec2 describe-vpcs --region ${{ env.AWS_REGION }} --filters "Name=tag:Name,Values=*dgs-skeleton*" --query 'Vpcs[].VpcId' || true
+        
+        # Check for any remaining Load Balancers
+        echo "Checking for Classic Load Balancers..."
+        aws elb describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancerDescriptions[?contains(LoadBalancerName, `dgs-skeleton`)].LoadBalancerName' || true
+        
+        echo "Checking for Application Load Balancers..."
+        aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancers[?contains(LoadBalancerName, `dgs-skeleton`)].LoadBalancerName' || true
+        
+        # Check for S3 buckets (only if complete destroy)
+        if [ "${{ github.event.inputs.destroy_level }}" = "complete-destroy" ]; then
+          echo "Checking for S3 buckets..."
+          aws s3api list-buckets --query 'Buckets[?contains(Name, `dgs-skeleton`)].Name' || true
+        else
+          echo "S3 state bucket preserved for future deployments ✅"
+        fi
+        
+        echo "=== Cleanup verification complete ==="
