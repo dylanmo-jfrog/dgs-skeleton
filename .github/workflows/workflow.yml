@@ -268,7 +268,6 @@ jobs:
         echo "=== Creating image pull secret ==="
         echo "Docker server: ${{ env.JF_HOST }}"
         echo "Docker username: ${{ steps.setup-cli.outputs.oidc-user }}"
-        echo "Token length: ${#${{ steps.setup-cli.outputs.oidc-token }}}"
         
         kubectl create secret docker-registry artifactory-pull-secret \
           --docker-server=${{ env.JF_HOST }} \
