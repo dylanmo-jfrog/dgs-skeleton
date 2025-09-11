@@ -340,7 +340,47 @@ jobs:
         # Get node IPs and service port for access
         echo "=== Access Information ==="
         NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}')
+        INTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
         SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
+        
+        echo "Service details:"
+        kubectl get service dgs-skeleton-service
+        echo "Node details:"
+        kubectl get nodes -o wide
+        
+        # Show all available access methods
+        echo ""
+        echo "🌐 External Access Options:"
+        echo "📍 Service Port: $SERVICE_PORT"
+        
+        if [ -n "$NODE_IPS" ]; then
+          echo "🔗 External IPs found:"
+          for ip in $NODE_IPS; do
+            echo "   GraphQL API: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
+            echo "   Health check: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
+          done
+        else
+          echo "🔗 No External IPs found. Using AWS EKS worker node public IPs:"
+          # Get EKS node public IPs using AWS CLI
+          echo "   Getting public IPs of EKS worker nodes..."
+          INSTANCE_IDS=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | sed 's|.*\/||g')
+          
+          for instance_id in $INSTANCE_IDS; do
+            echo "   Instance ID: $instance_id"
+            PUBLIC_IP=$(aws ec2 describe-instances --instance-ids $instance_id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+            if [ "$PUBLIC_IP" != "None" ] && [ -n "$PUBLIC_IP" ]; then
+              echo "   🚀 GraphQL API: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/graphql"
+              echo "   🔍 Health check: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/health/status"
+            else
+              echo "   ❌ No public IP for instance $instance_id"
+            fi
+          done
+        fi
+        
+        echo ""
+        echo "🖥️  Local Access (always available):"
+        echo "   kubectl port-forward service/dgs-skeleton-service 8080:80"
+        echo "   Then access: http://localhost:8080/jfrog-demo/graphql"
         
         # Verify pods are ready through Kubernetes API instead of external access
         echo "=== Verifying pods are ready internally ==="
@@ -362,16 +402,32 @@ jobs:
             echo "✅ Health check passed! Application is ready."
             kill $PORT_FORWARD_PID
             
-            # Show access information
+            echo ""
+            echo "🎉 DEPLOYMENT SUCCESSFUL! 🎉"
+            echo ""
+            
+            # Show final access information
             if [ -n "$NODE_IPS" ] && [ -n "$SERVICE_PORT" ]; then
+              echo "🌍 External Access (via NodePort):"
               for ip in $NODE_IPS; do
-                echo "🚀 GraphQL API should be available at: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
-                echo "🔍 Health check endpoint: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
+                echo "   🚀 GraphQL API: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
+                echo "   🔍 Health check: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
               done
             else
-              echo "🚀 Use port-forwarding to access: kubectl port-forward service/dgs-skeleton-service 8080:80"
-              echo "🔍 Then access GraphQL at: http://localhost:8080/jfrog-demo/graphql"
+              echo "🌍 External Access (get public IPs manually):"
+              echo "   1. Get worker node public IPs:"
+              echo "      kubectl get nodes -o wide"
+              echo "      # Or use AWS console/CLI to get public IPs"
+              echo "   2. Access via NodePort $SERVICE_PORT:"
+              echo "      GraphQL: http://[PUBLIC_IP]:$SERVICE_PORT/jfrog-demo/graphql"
+              echo "      Health: http://[PUBLIC_IP]:$SERVICE_PORT/jfrog-demo/health/status"
             fi
+            
+            echo ""
+            echo "🖥️  Local Access (port-forward):"
+            echo "   kubectl port-forward service/dgs-skeleton-service 8080:80"
+            echo "   GraphQL: http://localhost:8080/jfrog-demo/graphql"
+            echo "   Health: http://localhost:8080/jfrog-demo/health/status"
             
             # Success - exit the deployment step successfully
             exit 0
