@@ -52,18 +52,35 @@ jobs:
     - name: Remove Kubernetes Resources
       continue-on-error: true
       run: |
-        echo "Removing all resources from Kubernetes cluster..."
-        kubectl delete service dgs-skeleton-service || true
-        kubectl delete deployment dgs-skeleton || true
+        echo "=== Removing all Kubernetes resources ==="
+        
+        # Delete specific deployment and service first
+        kubectl delete deployment dgs-skeleton --timeout=60s || true
+        kubectl delete service dgs-skeleton-service --timeout=120s || true
         kubectl delete secret artifactory-pull-secret || true
         
-        # Clean up any potential LoadBalancer services that might exist
-        echo "Checking for any LoadBalancer services..."
-        kubectl get services -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].metadata.name}' | xargs -r kubectl delete service || true
+        # Clean up any remaining LoadBalancer services (this is critical!)
+        echo "Cleaning up all LoadBalancer services..."
+        kubectl get services -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].metadata.name}' | xargs -r -I {} kubectl delete service {} --timeout=120s || true
         
-        # Wait a moment for AWS LoadBalancers to start cleanup
-        echo "Waiting 30 seconds for any LoadBalancer cleanup to begin..."
-        sleep 30
+        # Clean up any remaining deployments, services, pods
+        echo "Cleaning up remaining resources..."
+        kubectl delete deployments --all --timeout=60s || true
+        kubectl delete services --all --timeout=120s || true
+        kubectl delete pods --all --timeout=60s || true
+        kubectl delete secrets --all || true
+        
+        # Show remaining resources for debugging
+        echo "=== Remaining Kubernetes resources (should be minimal) ==="
+        kubectl get all --all-namespaces | grep -v "kubernetes\|kube-system\|default" || echo "No custom resources found"
+        
+        # Wait longer for AWS LoadBalancers to cleanup (they can take 2-3 minutes)
+        echo "⏳ Waiting 120 seconds for AWS LoadBalancer cleanup (ELB/NLB deletion)..."
+        sleep 120
+        
+        # Verify LoadBalancer cleanup progress
+        echo "Checking LoadBalancer cleanup status..."
+        kubectl get services -A | grep LoadBalancer || echo "✅ No LoadBalancer services found"
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
@@ -77,6 +94,35 @@ jobs:
     - name: Terraform Destroy
       working-directory: ./terraform
       run: terraform destroy -auto-approve
+
+    - name: Manual cleanup of any remaining AWS resources
+      continue-on-error: true
+      run: |
+        echo "=== Manual cleanup of potentially orphaned resources ==="
+        
+        # Sometimes LoadBalancers don't get cleaned up if they were created after Terraform
+        # Check for and manually delete any remaining LoadBalancers
+        echo "Checking for orphaned LoadBalancers..."
+        
+        # Clean up any remaining ALBs/NLBs that might have dgs-skeleton in the name or tags
+        aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancers[?contains(LoadBalancerName, `k8s-default-dgsskele`) || contains(LoadBalancerName, `k8s-`) ].LoadBalancerArn' --output text | while read -r lb_arn; do
+          if [ -n "$lb_arn" ]; then
+            echo "Deleting orphaned LoadBalancer: $lb_arn"
+            aws elbv2 delete-load-balancer --load-balancer-arn "$lb_arn" --region ${{ env.AWS_REGION }} || true
+          fi
+        done
+        
+        # Clean up security groups that might be left behind (retry after LB deletion)
+        echo "Waiting 60 seconds for LoadBalancer deletion to propagate..."
+        sleep 60
+        
+        echo "Checking for orphaned security groups..."
+        aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --filters "Name=group-name,Values=k8s-elb-*" --query 'SecurityGroups[].GroupId' --output text | while read -r sg_id; do
+          if [ -n "$sg_id" ]; then
+            echo "Attempting to delete security group: $sg_id"
+            aws ec2 delete-security-group --group-id "$sg_id" --region ${{ env.AWS_REGION }} || true
+          fi
+        done
 
     - name: Cleanup Local Kubeconfig
       if: always()
@@ -101,29 +147,91 @@ jobs:
 
     - name: Verify All Resources Destroyed
       run: |
-        echo "=== Verifying resource cleanup ==="
+        echo "=== COMPREHENSIVE RESOURCE VERIFICATION ==="
         
         # Check for any remaining EKS clusters
-        echo "Checking for EKS clusters..."
-        aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[?contains(@, `dgs-skeleton`)]' || true
-        
-        # Check for any remaining VPCs with our tags
-        echo "Checking for VPCs..."
-        aws ec2 describe-vpcs --region ${{ env.AWS_REGION }} --filters "Name=tag:Name,Values=*dgs-skeleton*" --query 'Vpcs[].VpcId' || true
-        
-        # Check for any remaining Load Balancers
-        echo "Checking for Classic Load Balancers..."
-        aws elb describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancerDescriptions[?contains(LoadBalancerName, `dgs-skeleton`)].LoadBalancerName' || true
-        
-        echo "Checking for Application Load Balancers..."
-        aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancers[?contains(LoadBalancerName, `dgs-skeleton`)].LoadBalancerName' || true
-        
-        # Check for S3 buckets (only if complete destroy)
-        if [ "${{ github.event.inputs.destroy_level }}" = "complete-destroy" ]; then
-          echo "Checking for S3 buckets..."
-          aws s3api list-buckets --query 'Buckets[?contains(Name, `dgs-skeleton`)].Name' || true
+        echo "🔍 Checking for EKS clusters..."
+        CLUSTERS=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[?contains(@, `dgs-skeleton`)]' --output text)
+        if [ -n "$CLUSTERS" ]; then
+          echo "❌ Found remaining EKS clusters: $CLUSTERS"
         else
-          echo "S3 state bucket preserved for future deployments ✅"
+          echo "✅ No EKS clusters found"
         fi
         
-        echo "=== Cleanup verification complete ==="
+        # Check for VPCs
+        echo "🔍 Checking for VPCs..."
+        VPCS=$(aws ec2 describe-vpcs --region ${{ env.AWS_REGION }} --filters "Name=tag:Name,Values=*dgs-skeleton*" --query 'Vpcs[].VpcId' --output text)
+        if [ -n "$VPCS" ]; then
+          echo "❌ Found remaining VPCs: $VPCS"
+        else
+          echo "✅ No tagged VPCs found"
+        fi
+        
+        # Check for Classic Load Balancers
+        echo "🔍 Checking for Classic Load Balancers..."
+        CLBS=$(aws elb describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancerDescriptions[?contains(LoadBalancerName, `dgs-skeleton`)].LoadBalancerName' --output text)
+        if [ -n "$CLBS" ]; then
+          echo "❌ Found Classic Load Balancers: $CLBS"
+        else
+          echo "✅ No Classic Load Balancers found"
+        fi
+        
+        # Check for Application/Network Load Balancers
+        echo "🔍 Checking for ALB/NLB Load Balancers..."
+        ALBS=$(aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancers[?contains(LoadBalancerName, `dgs-skeleton`) || contains(tags, `dgs-skeleton`)].LoadBalancerName' --output text 2>/dev/null || echo "")
+        if [ -n "$ALBS" ]; then
+          echo "❌ Found ALB/NLB Load Balancers: $ALBS"
+        else
+          echo "✅ No ALB/NLB Load Balancers found"
+        fi
+        
+        # Check for Security Groups
+        echo "🔍 Checking for Security Groups..."
+        SGS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --filters "Name=tag:Name,Values=*dgs-skeleton*" --query 'SecurityGroups[].GroupId' --output text)
+        if [ -n "$SGS" ]; then
+          echo "❌ Found Security Groups: $SGS"
+        else
+          echo "✅ No tagged Security Groups found"
+        fi
+        
+        # Check for EC2 instances
+        echo "🔍 Checking for EC2 instances..."
+        INSTANCES=$(aws ec2 describe-instances --region ${{ env.AWS_REGION }} --filters "Name=tag:Name,Values=*dgs-skeleton*" "Name=instance-state-name,Values=running,stopped,stopping,pending" --query 'Reservations[].Instances[].InstanceId' --output text)
+        if [ -n "$INSTANCES" ]; then
+          echo "❌ Found EC2 instances: $INSTANCES"
+        else
+          echo "✅ No tagged EC2 instances found"
+        fi
+        
+        # Check for NAT Gateways
+        echo "🔍 Checking for NAT Gateways..."
+        NATS=$(aws ec2 describe-nat-gateways --region ${{ env.AWS_REGION }} --filter "Name=tag:Name,Values=*dgs-skeleton*" --query 'NatGateways[?State!=`deleted`].NatGatewayId' --output text)
+        if [ -n "$NATS" ]; then
+          echo "❌ Found NAT Gateways: $NATS"
+        else
+          echo "✅ No NAT Gateways found"
+        fi
+        
+        # Check for S3 buckets (based on destroy level)
+        if [ "${{ github.event.inputs.destroy_level }}" = "complete-destroy" ]; then
+          echo "🔍 Checking for S3 buckets..."
+          BUCKETS=$(aws s3api list-buckets --query 'Buckets[?contains(Name, `dgs-skeleton`)].Name' --output text)
+          if [ -n "$BUCKETS" ]; then
+            echo "❌ Found S3 buckets: $BUCKETS"
+          else
+            echo "✅ No S3 buckets found"
+          fi
+        else
+          echo "💾 S3 state bucket preserved for future deployments"
+        fi
+        
+        echo ""
+        echo "=== CLEANUP SUMMARY ==="
+        if [ "${{ github.event.inputs.destroy_level }}" = "complete-destroy" ]; then
+          echo "🗑️  COMPLETE DESTROY executed"
+          echo "💡 To redeploy: Run terraform/bootstrap first, then workflow.yml"
+        else
+          echo "🏗️  INFRASTRUCTURE-ONLY destroy executed"
+          echo "💡 To redeploy: Just run workflow.yml (bootstrap not needed)"
+        fi
+        echo "=== VERIFICATION COMPLETE ==="
