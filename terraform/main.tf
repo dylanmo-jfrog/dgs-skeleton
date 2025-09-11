@@ -51,6 +51,15 @@ module "eks" {
   # Optional: Restrict public access to specific CIDR blocks
   cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]  # You might want to restrict this to specific IPs
 
+  # Grant access to your user
+  aws_auth_users = [
+    {
+      userarn  = "arn:aws:iam::319319364622:user/testuser1"
+      username = "testuser1"
+      groups   = ["system:masters"]
+    }
+  ]
+
   eks_managed_node_groups = {
     default = {
       min_size     = 1
