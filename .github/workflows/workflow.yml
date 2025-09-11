@@ -337,76 +337,12 @@ jobs:
         kubectl get pods -l app=dgs-skeleton
         kubectl get service dgs-skeleton-service
         
-        # Get service details and external access info
+        # Get service details for information
         echo "=== Access Information ==="
         SERVICE_TYPE=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.type}')
         
         echo "Service details:"
         kubectl get service dgs-skeleton-service -o wide
-        
-        if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
-          echo ""
-          echo "🔄 Waiting for LoadBalancer to get external IP/hostname..."
-          
-          # Wait for LoadBalancer to get external IP (AWS creates ELB/NLB)
-          for i in {1..20}; do
-            EXTERNAL_IP=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-            if [ -z "$EXTERNAL_IP" ]; then
-              EXTERNAL_IP=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            fi
-            
-            if [ -n "$EXTERNAL_IP" ] && [ "$EXTERNAL_IP" != "<pending>" ]; then
-              echo "✅ LoadBalancer ready!"
-              echo "🌍 External hostname/IP: $EXTERNAL_IP"
-              echo ""
-              echo "🚀 GraphQL API: http://$EXTERNAL_IP/jfrog-demo/graphql"
-              echo "🔍 Health check: http://$EXTERNAL_IP/jfrog-demo/health/status"
-              break
-            else
-              echo "⏳ Attempt $i/20: LoadBalancer still provisioning, waiting 15 seconds..."
-              kubectl get service dgs-skeleton-service
-              sleep 15
-            fi
-            
-            if [ $i -eq 20 ]; then
-              echo "⚠️  LoadBalancer took longer than expected. Check AWS console for ELB status."
-              echo "   Service details:"
-              kubectl describe service dgs-skeleton-service
-            fi
-          done
-          
-        else
-          # Handle NodePort or other service types
-          NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}')
-          SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
-          
-          echo "🌐 External Access Options:"
-          echo "📍 Service Port: $SERVICE_PORT"
-          
-          if [ -n "$NODE_IPS" ]; then
-            echo "🔗 External IPs found:"
-            for ip in $NODE_IPS; do
-              echo "   GraphQL API: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
-              echo "   Health check: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
-            done
-          else
-            echo "🔗 No External IPs found. Using AWS EKS worker node public IPs:"
-            # Get EKS node public IPs using AWS CLI
-            echo "   Getting public IPs of EKS worker nodes..."
-            INSTANCE_IDS=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | sed 's|.*\/||g')
-            
-            for instance_id in $INSTANCE_IDS; do
-              echo "   Instance ID: $instance_id"
-              PUBLIC_IP=$(aws ec2 describe-instances --instance-ids $instance_id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-              if [ "$PUBLIC_IP" != "None" ] && [ -n "$PUBLIC_IP" ]; then
-                echo "   🚀 GraphQL API: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/graphql"
-                echo "   🔍 Health check: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/health/status"
-              else
-                echo "   ❌ No public IP for instance $instance_id"
-              fi
-            done
-          fi
-        fi
         
         echo ""
         echo "🖥️  Local Access (always available):"
@@ -437,26 +373,59 @@ jobs:
             echo "🎉 DEPLOYMENT SUCCESSFUL! 🎉"
             echo ""
             
-            # Show final access information based on service type
+            # Now wait properly for LoadBalancer after health check passes
             SERVICE_TYPE=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.type}')
             
             if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
-              EXTERNAL_ENDPOINT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-              if [ -z "$EXTERNAL_ENDPOINT" ]; then
-                EXTERNAL_ENDPOINT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-              fi
+              echo "🔄 Waiting for LoadBalancer external IP/hostname (this can take 3-5 minutes)..."
               
-              if [ -n "$EXTERNAL_ENDPOINT" ] && [ "$EXTERNAL_ENDPOINT" != "<pending>" ]; then
-                echo "🌍 External Access (LoadBalancer):"
-                echo "   🚀 GraphQL API: http://$EXTERNAL_ENDPOINT/jfrog-demo/graphql"
-                echo "   🔍 Health check: http://$EXTERNAL_ENDPOINT/jfrog-demo/health/status"
-                echo "   📊 GraphiQL: http://$EXTERNAL_ENDPOINT/jfrog-demo/graphiql"
-              else
-                echo "🌍 External Access: LoadBalancer still provisioning"
-                echo "   Check: kubectl get service dgs-skeleton-service"
-              fi
+              # Wait up to 10 minutes for LoadBalancer external IP
+              EXTERNAL_ENDPOINT=""
+              for i in {1..40}; do
+                EXTERNAL_ENDPOINT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                if [ -z "$EXTERNAL_ENDPOINT" ]; then
+                  EXTERNAL_ENDPOINT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                fi
+                
+                if [ -n "$EXTERNAL_ENDPOINT" ] && [ "$EXTERNAL_ENDPOINT" != "<pending>" ]; then
+                  echo ""
+                  echo "✅ LoadBalancer provisioned successfully!"
+                  echo "🌍 External hostname: $EXTERNAL_ENDPOINT"
+                  echo ""
+                  echo "🚀 GraphQL API: http://$EXTERNAL_ENDPOINT/jfrog-demo/graphql"
+                  echo "🔍 Health check: http://$EXTERNAL_ENDPOINT/jfrog-demo/health/status"
+                  echo "📊 GraphiQL: http://$EXTERNAL_ENDPOINT/jfrog-demo/graphiql"
+                  
+                  # Test the external endpoint
+                  echo ""
+                  echo "🧪 Testing external LoadBalancer endpoint..."
+                  sleep 10  # Give LoadBalancer a moment to fully initialize
+                  if curl -f -s --max-time 10 "http://$EXTERNAL_ENDPOINT/jfrog-demo/health/status" > /dev/null 2>&1; then
+                    echo "✅ External endpoint responding correctly!"
+                  else
+                    echo "⚠️  External endpoint not responding yet (may need a few more minutes)"
+                    echo "   This is normal - LoadBalancer targets may still be registering"
+                  fi
+                  break
+                else
+                  if [ $((i % 4)) -eq 0 ]; then  # Show progress every minute
+                    echo "⏳ Still waiting for LoadBalancer... ($((i * 15 / 60)) min elapsed, up to 10 min total)"
+                    kubectl get service dgs-skeleton-service -o wide
+                  fi
+                  sleep 15
+                fi
+                
+                if [ $i -eq 40 ]; then
+                  echo ""
+                  echo "⚠️  LoadBalancer took longer than 10 minutes to get external IP"
+                  echo "   This sometimes happens with AWS - check your AWS console:"
+                  echo "   EC2 → Load Balancers → Look for 'k8s-default-dgsskele-*'"
+                  echo ""
+                  kubectl describe service dgs-skeleton-service
+                fi
+              done
             else
-              # Handle NodePort fallback
+              # Handle NodePort fallback  
               SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
               echo "🌍 External Access (NodePort): Use port $SERVICE_PORT with worker node public IPs"
             fi
