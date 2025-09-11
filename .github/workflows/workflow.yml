@@ -342,55 +342,48 @@ jobs:
         NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}')
         SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
         
-        if [ -n "$NODE_IPS" ]; then
-          for ip in $NODE_IPS; do
-            echo "GraphQL endpoint: http://$ip:$SERVICE_PORT/graphql"
-            echo "Health check: http://$ip:$SERVICE_PORT/health/status"
+        # Verify pods are ready through Kubernetes API instead of external access
+        echo "=== Verifying pods are ready internally ==="
+        kubectl get pods -l app=dgs-skeleton -o wide
+        
+        # Wait for all pods to be in Ready state
+        echo "Waiting for all pods to be ready..."
+        kubectl wait --for=condition=Ready pod -l app=dgs-skeleton --timeout=300s
+        
+        # Test health check internally using port-forward (more reliable than NodePort)
+        echo "Testing health check via port-forward..."
+        kubectl port-forward service/dgs-skeleton-service 8080:80 &
+        PORT_FORWARD_PID=$!
+        sleep 10
+        
+        # Try health check with port-forward
+        for i in {1..10}; do
+          if curl -f -s "http://localhost:8080/jfrog-demo/health/status" > /dev/null 2>&1; then
+            echo "✅ Health check passed! Application is ready."
+            kill $PORT_FORWARD_PID
             
-            # Wait for health check to go green
-            echo "Waiting for health check to be ready at http://$ip:$SERVICE_PORT/health/status..."
-            for i in {1..30}; do
-              if curl -f -s "http://$ip:$SERVICE_PORT/health/status" > /dev/null 2>&1; then
-                echo "✅ Health check passed! Application is ready."
-                echo "🚀 GraphQL API is available at: http://$ip:$SERVICE_PORT/graphql"
-                break
-              else
-                echo "⏳ Attempt $i/30: Health check not ready yet, waiting 10 seconds..."
-                sleep 10
-              fi
-              
-              if [ $i -eq 30 ]; then
-                echo "❌ Health check failed after 5 minutes. Check pod logs:"
-                kubectl logs -l app=dgs-skeleton --tail=50
-                exit 1
-              fi
-            done
-          done
-        else
-          echo "No external IPs found. Use port-forwarding: kubectl port-forward service/dgs-skeleton-service 8080:80"
-          
-          # For port-forward scenario, test health check via localhost
-          echo "Testing health check via port-forward..."
-          kubectl port-forward service/dgs-skeleton-service 8080:80 &
-          PORT_FORWARD_PID=$!
-          sleep 5
-          
-          for i in {1..30}; do
-            if curl -f -s "http://localhost:8080/health/status" > /dev/null 2>&1; then
-              echo "✅ Health check passed! Application is ready."
-              echo "🚀 GraphQL API is available at: http://localhost:8080/graphql (via port-forward)"
-              kill $PORT_FORWARD_PID
-              break
+            # Show access information
+            if [ -n "$NODE_IPS" ] && [ -n "$SERVICE_PORT" ]; then
+              for ip in $NODE_IPS; do
+                echo "🚀 GraphQL API should be available at: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
+                echo "🔍 Health check endpoint: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
+              done
             else
-              echo "⏳ Attempt $i/30: Health check not ready yet, waiting 10 seconds..."
-              sleep 10
+              echo "🚀 Use port-forwarding to access: kubectl port-forward service/dgs-skeleton-service 8080:80"
+              echo "🔍 Then access GraphQL at: http://localhost:8080/jfrog-demo/graphql"
             fi
             
-            if [ $i -eq 30 ]; then
-              echo "❌ Health check failed after 5 minutes. Check pod logs:"
-              kubectl logs -l app=dgs-skeleton --tail=50
-              kill $PORT_FORWARD_PID
-              exit 1
-            fi
-          done
-        fi
+            # Success - exit the deployment step successfully
+            exit 0
+          else
+            echo "⏳ Attempt $i/10: Health check not ready yet, waiting 10 seconds..."
+            sleep 10
+          fi
+          
+          if [ $i -eq 10 ]; then
+            echo "❌ Health check failed after port-forward attempts. Check pod logs:"
+            kubectl logs -l app=dgs-skeleton --tail=50
+            kill $PORT_FORWARD_PID
+            exit 1
+          fi
+        done
