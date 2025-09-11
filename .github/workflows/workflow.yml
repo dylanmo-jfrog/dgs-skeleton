@@ -337,44 +337,75 @@ jobs:
         kubectl get pods -l app=dgs-skeleton
         kubectl get service dgs-skeleton-service
         
-        # Get node IPs and service port for access
+        # Get service details and external access info
         echo "=== Access Information ==="
-        NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}')
-        INTERNAL_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
-        SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
+        SERVICE_TYPE=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.type}')
         
         echo "Service details:"
-        kubectl get service dgs-skeleton-service
-        echo "Node details:"
-        kubectl get nodes -o wide
+        kubectl get service dgs-skeleton-service -o wide
         
-        # Show all available access methods
-        echo ""
-        echo "🌐 External Access Options:"
-        echo "📍 Service Port: $SERVICE_PORT"
-        
-        if [ -n "$NODE_IPS" ]; then
-          echo "🔗 External IPs found:"
-          for ip in $NODE_IPS; do
-            echo "   GraphQL API: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
-            echo "   Health check: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
-          done
-        else
-          echo "🔗 No External IPs found. Using AWS EKS worker node public IPs:"
-          # Get EKS node public IPs using AWS CLI
-          echo "   Getting public IPs of EKS worker nodes..."
-          INSTANCE_IDS=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | sed 's|.*\/||g')
+        if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
+          echo ""
+          echo "🔄 Waiting for LoadBalancer to get external IP/hostname..."
           
-          for instance_id in $INSTANCE_IDS; do
-            echo "   Instance ID: $instance_id"
-            PUBLIC_IP=$(aws ec2 describe-instances --instance-ids $instance_id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-            if [ "$PUBLIC_IP" != "None" ] && [ -n "$PUBLIC_IP" ]; then
-              echo "   🚀 GraphQL API: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/graphql"
-              echo "   🔍 Health check: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/health/status"
+          # Wait for LoadBalancer to get external IP (AWS creates ELB/NLB)
+          for i in {1..20}; do
+            EXTERNAL_IP=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -z "$EXTERNAL_IP" ]; then
+              EXTERNAL_IP=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            fi
+            
+            if [ -n "$EXTERNAL_IP" ] && [ "$EXTERNAL_IP" != "<pending>" ]; then
+              echo "✅ LoadBalancer ready!"
+              echo "🌍 External hostname/IP: $EXTERNAL_IP"
+              echo ""
+              echo "🚀 GraphQL API: http://$EXTERNAL_IP/jfrog-demo/graphql"
+              echo "🔍 Health check: http://$EXTERNAL_IP/jfrog-demo/health/status"
+              break
             else
-              echo "   ❌ No public IP for instance $instance_id"
+              echo "⏳ Attempt $i/20: LoadBalancer still provisioning, waiting 15 seconds..."
+              kubectl get service dgs-skeleton-service
+              sleep 15
+            fi
+            
+            if [ $i -eq 20 ]; then
+              echo "⚠️  LoadBalancer took longer than expected. Check AWS console for ELB status."
+              echo "   Service details:"
+              kubectl describe service dgs-skeleton-service
             fi
           done
+          
+        else
+          # Handle NodePort or other service types
+          NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="ExternalIP")].address}')
+          SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
+          
+          echo "🌐 External Access Options:"
+          echo "📍 Service Port: $SERVICE_PORT"
+          
+          if [ -n "$NODE_IPS" ]; then
+            echo "🔗 External IPs found:"
+            for ip in $NODE_IPS; do
+              echo "   GraphQL API: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
+              echo "   Health check: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
+            done
+          else
+            echo "🔗 No External IPs found. Using AWS EKS worker node public IPs:"
+            # Get EKS node public IPs using AWS CLI
+            echo "   Getting public IPs of EKS worker nodes..."
+            INSTANCE_IDS=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}' | sed 's|.*\/||g')
+            
+            for instance_id in $INSTANCE_IDS; do
+              echo "   Instance ID: $instance_id"
+              PUBLIC_IP=$(aws ec2 describe-instances --instance-ids $instance_id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+              if [ "$PUBLIC_IP" != "None" ] && [ -n "$PUBLIC_IP" ]; then
+                echo "   🚀 GraphQL API: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/graphql"
+                echo "   🔍 Health check: http://$PUBLIC_IP:$SERVICE_PORT/jfrog-demo/health/status"
+              else
+                echo "   ❌ No public IP for instance $instance_id"
+              fi
+            done
+          fi
         fi
         
         echo ""
@@ -406,21 +437,28 @@ jobs:
             echo "🎉 DEPLOYMENT SUCCESSFUL! 🎉"
             echo ""
             
-            # Show final access information
-            if [ -n "$NODE_IPS" ] && [ -n "$SERVICE_PORT" ]; then
-              echo "🌍 External Access (via NodePort):"
-              for ip in $NODE_IPS; do
-                echo "   🚀 GraphQL API: http://$ip:$SERVICE_PORT/jfrog-demo/graphql"
-                echo "   🔍 Health check: http://$ip:$SERVICE_PORT/jfrog-demo/health/status"
-              done
+            # Show final access information based on service type
+            SERVICE_TYPE=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.type}')
+            
+            if [ "$SERVICE_TYPE" = "LoadBalancer" ]; then
+              EXTERNAL_ENDPOINT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+              if [ -z "$EXTERNAL_ENDPOINT" ]; then
+                EXTERNAL_ENDPOINT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+              fi
+              
+              if [ -n "$EXTERNAL_ENDPOINT" ] && [ "$EXTERNAL_ENDPOINT" != "<pending>" ]; then
+                echo "🌍 External Access (LoadBalancer):"
+                echo "   🚀 GraphQL API: http://$EXTERNAL_ENDPOINT/jfrog-demo/graphql"
+                echo "   🔍 Health check: http://$EXTERNAL_ENDPOINT/jfrog-demo/health/status"
+                echo "   📊 GraphiQL: http://$EXTERNAL_ENDPOINT/jfrog-demo/graphiql"
+              else
+                echo "🌍 External Access: LoadBalancer still provisioning"
+                echo "   Check: kubectl get service dgs-skeleton-service"
+              fi
             else
-              echo "🌍 External Access (get public IPs manually):"
-              echo "   1. Get worker node public IPs:"
-              echo "      kubectl get nodes -o wide"
-              echo "      # Or use AWS console/CLI to get public IPs"
-              echo "   2. Access via NodePort $SERVICE_PORT:"
-              echo "      GraphQL: http://[PUBLIC_IP]:$SERVICE_PORT/jfrog-demo/graphql"
-              echo "      Health: http://[PUBLIC_IP]:$SERVICE_PORT/jfrog-demo/health/status"
+              # Handle NodePort fallback
+              SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
+              echo "🌍 External Access (NodePort): Use port $SERVICE_PORT with worker node public IPs"
             fi
             
             echo ""
@@ -428,6 +466,7 @@ jobs:
             echo "   kubectl port-forward service/dgs-skeleton-service 8080:80"
             echo "   GraphQL: http://localhost:8080/jfrog-demo/graphql"
             echo "   Health: http://localhost:8080/jfrog-demo/health/status"
+            echo "   GraphiQL: http://localhost:8080/jfrog-demo/graphiql"
             
             # Success - exit the deployment step successfully
             exit 0
