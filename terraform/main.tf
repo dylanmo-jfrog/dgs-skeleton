@@ -83,7 +83,7 @@ module "eks" {
   # Enable IRSA for pod IAM roles
   enable_irsa = true
 
-  # Allow worker nodes to pull from ECR
+  # Allow worker nodes to pull from ECR and accept NodePort traffic
   node_security_group_additional_rules = {
     ingress_self_all = {
       description = "Node to node all ports/protocols"
@@ -92,6 +92,14 @@ module "eks" {
       to_port     = 0
       type        = "ingress"
       self        = true
+    }
+    ingress_nodeport_tcp = {
+      description = "Allow NodePort access from internet"
+      protocol    = "tcp"
+      from_port   = 30000
+      to_port     = 32767
+      type        = "ingress"
+      cidr_blocks = ["0.0.0.0/0"]
     }
     egress_all = {
       description = "Node all egress"
