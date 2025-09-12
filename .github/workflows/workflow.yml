@@ -445,17 +445,6 @@ jobs:
                 echo "   🎨 GraphiQL UI: http://$IP:$SERVICE_PORT/jfrog-demo/graphiql"
                 echo ""
               done
-              
-              echo "🔍 Debug info:"
-              echo "   Pod locations:"
-              kubectl get pods -o wide | grep dgs-skeleton
-              echo "   Service endpoints:"
-              kubectl get endpoints dgs-skeleton-service
-              echo ""
-              echo "   Testing connectivity to first public IP:"
-              FIRST_IP=$(echo $PUBLIC_IPS | awk '{print $1}')
-              echo "   Trying: http://$FIRST_IP:$SERVICE_PORT/jfrog-demo/health/status"
-              curl -v -m 10 "http://$FIRST_IP:$SERVICE_PORT/jfrog-demo/health/status" || echo "   ❌ Connection failed"
             fi
             
             echo ""
