@@ -425,9 +425,26 @@ jobs:
                 fi
               done
             else
-              # Handle NodePort fallback  
+              # Handle NodePort with public IPs
               SERVICE_PORT=$(kubectl get service dgs-skeleton-service -o jsonpath='{.spec.ports[0].nodePort}')
-              echo "🌍 External Access (NodePort): Use port $SERVICE_PORT with worker node public IPs"
+              echo "🌍 External Access (NodePort with Public IPs):"
+              echo "   NodePort: $SERVICE_PORT"
+              echo ""
+              echo "   Direct access URLs:"
+              
+              # Get public IPs of worker nodes
+              PUBLIC_IPS=$(aws ec2 describe-instances \
+                --filters "Name=tag:kubernetes.io/cluster/dgs-skeleton-cluster,Values=owned" \
+                          "Name=instance-state-name,Values=running" \
+                --query 'Reservations[*].Instances[*].PublicIpAddress' \
+                --output text | tr '\t' '\n' | grep -v None)
+              
+              for IP in $PUBLIC_IPS; do
+                echo "   🚀 GraphQL API: http://$IP:$SERVICE_PORT/jfrog-demo/graphql"
+                echo "   🏥 Health Check: http://$IP:$SERVICE_PORT/jfrog-demo/health/status"  
+                echo "   🎨 GraphiQL UI: http://$IP:$SERVICE_PORT/jfrog-demo/graphiql"
+                echo ""
+              done
             fi
             
             echo ""

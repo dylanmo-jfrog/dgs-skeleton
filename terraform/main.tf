@@ -42,7 +42,7 @@ module "eks" {
   cluster_version = var.cluster_version
 
   vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
+  subnet_ids = module.vpc.public_subnets  # Use public subnets for direct access
   
   # Enable public endpoint access
   cluster_endpoint_public_access = true
