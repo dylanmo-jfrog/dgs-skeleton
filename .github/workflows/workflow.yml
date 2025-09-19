@@ -100,9 +100,9 @@ jobs:
             fi
 
             jf rt bag ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} # collect vcs info
-            jf mvn -f pom.xml -Drevision=${{ env.PKG_VERSION }} -Dmaven.test.skip=true clean package # build the war
+            jf mvn -q -f pom.xml -Drevision=${{ env.PKG_VERSION }} -Dmaven.test.skip=true clean package # build the war
             jf audit --mvn --fail=false --vuln # scan the war
-            jf mvn -f pom.xml -Drevision=${{ env.PKG_VERSION }} -Dmaven.test.skip=true --build-name=${{ env.BUILD_NAME }} --build-number=${{ env.BUILD_NUMBER }} deploy # deploy the war
+            jf mvn -q -f pom.xml -Drevision=${{ env.PKG_VERSION }} -Dmaven.test.skip=true --build-name=${{ env.BUILD_NAME }} --build-number=${{ env.BUILD_NUMBER }} deploy # deploy the war
             jf rt bp ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }} # publish the build info
             jf bs --fail=false --vuln ${{ env.BUILD_NAME }} ${{ env.BUILD_NUMBER }}
             
