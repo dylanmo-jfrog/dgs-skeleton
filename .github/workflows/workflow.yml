@@ -138,7 +138,10 @@ jobs:
           build-args: |
             WAR_FILE_NAME=dgs-skeleton-webapp-${{ env.PKG_VERSION }}.war
           tags: ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }}
-      
+
+      - name: Push Docker image
+        run: jf docker push ${{ env.JF_HOST }}/${{ env.DOCKER_REPO }}/${{ env.IMAGE_NAME}}:${{ env.PKG_VERSION }} --build-name=${{ env.BUILD_NAME }} --build-number=${{ github.run_number }}
+
       - name: Push Docker build info
         env:
           PKG_VERSION: 1.${{ env.BUILD_NUMBER }}.0
