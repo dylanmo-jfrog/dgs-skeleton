@@ -133,7 +133,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          provenance: true
+          provenance: false
           push: false
           load: true
           build-args: |
