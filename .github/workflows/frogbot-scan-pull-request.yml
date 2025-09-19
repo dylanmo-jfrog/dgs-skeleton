@@ -1,45 +1,26 @@
-name: "Frogbot Scan Pull Request"
+name: "Frogbot Scan PR"
+
 on:
-  pull_request_target:
-    types: [opened, synchronize]
+  pull_request_target: 
+    types: [opened, synchronize] # Triggers scan-pr flow for every opened/updated pull request
+    
 permissions:
-  pull-requests: write
-  contents: read
-  security-events: write
+  actions: read           # for detecting the Github Actions environment
+  id-token: write         # for creating OIDC tokens for signing
+  pull-requests: write    # for writing to PRs
+  contents: write         # for creating fixing pull requests and pushing changes
+  security-events: write  # for uploading SARIF results to GitHub Code Scanning
+
 jobs:
   scan-pull-request:
     runs-on: ubuntu-latest
-    # A pull request needs to be approved, before Frogbot scans it. Any GitHub user who is associated with the
-    # "frogbot" GitHub environment can approve the pull request to be scanned.
-    environment: frogbot
     steps:
-      - uses: actions/checkout@v2
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      # Install prerequisites
-      - name: Set up Java
-        uses: actions/setup-java@v3
-        with:
-          java-version: "11"
-          distribution: "adopt"
       - uses: jfrog/frogbot@v2
+        # [Mandatory if using OIDC authentication protocol instead of JF_ACCESS_TOKEN]
+        # Insert to oidc-provider-name the 'Provider Name' defined in the OIDC integration configured in the JPD
+        with:
+           oidc-provider-name: dylanmo-github
+           oidc-audience: dylanmo-github
         env:
-          # [Mandatory]
-          # JFrog platform URL (This functionality requires version 3.29.0 or above of Xray)
-          JF_URL: ${{ secrets.JF_URL }}
-
-          # [Mandatory if JF_USER and JF_PASSWORD are not provided]
-          # JFrog access token with 'read' permissions on Xray service
-          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
-
-          # [Mandatory]
-          # The GitHub token automatically generated for the job
+          JF_URL: ${{ vars.JF_URL }}
           JF_GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          JF_DEPS_REPO: "dro-backend-maven-virtual"
-          # these parameters are better suited for demos, in real life, bith are often set to false
-          JF_INCLUDE_ALL_VULNERABILITIES: "TRUE"
-          JF_GIT_AGGREGATE_FIXES: "TRUE"
-          # [Optional, default: "TRUE"]
-          # Fails the Frogbot task if any security issue is found.
-          JF_FAIL: "FALSE"
